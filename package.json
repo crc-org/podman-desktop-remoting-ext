@@ -1,0 +1,33 @@
+{
+ "devDependencies": {
+   "@podman-desktop/api": "latest",
+   "typescript": "latest",
+   "vite": "latest"
+ },
+  "name": "llama-cpp-apir-extension",
+  "displayName": "Llama.cpp API Remoting",
+  "description": "Enables the acceleration of llama.cpp inference with API Remoting",
+  "version": "0.0.1",
+  "icon": "icon.png",
+  "publisher": "kpouget",
+  "engines": {
+    "podman-desktop": "latest"
+  },
+ "main": "./dist/extension.js",
+
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest watch --coverage",
+    "watch": "vite build --watch"
+  },
+
+ "contributes": {
+    "commands": [
+     {
+       "command": "llama.cpp.apir",
+       "title": "llama.cpp API Remoting"
+     }
+   ]
+  }
+}
