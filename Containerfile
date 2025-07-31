@@ -8,4 +8,5 @@ LABEL org.opencontainers.image.title="Llama.cpp API Remoting Podman Desktop exte
 COPY package.json /extension/
 COPY icon.png /extension/
 COPY dist /extension/dist
-COPY build /extension/build
+
+# /extension/build will be populated by the build system
