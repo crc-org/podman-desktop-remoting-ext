@@ -360,11 +360,11 @@ async function initializeStorageDir(storagePath, buildPath) {
 export async function activate(extensionContext: extensionApi.ExtensionContext): Promise<void> {
     // initialize the global variables ...
     ExtensionStoragePath = extensionContext.storagePath;
-
+    console.log("Activating the API Remoting extension ...")
     try {
         await initializeBuildDir(EXTENSION_BUILD_PATH);
-        console.log(`Using image ${RamalamaRemotingImage}`);
         console.log(`Installing APIR version ${ApirVersion} ...`);
+        console.log(`Using image ${RamalamaRemotingImage}`);
 
         await initializeStorageDir(extensionContext.storagePath, EXTENSION_BUILD_PATH);
 
