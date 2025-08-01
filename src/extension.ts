@@ -21,7 +21,7 @@ const async_fs = require('fs/promises');
 const AvailableModels = {};
 let ExtensionStoragePath = undefined;
 
-const FAIL_IF_NOT_MAC = false;
+const FAIL_IF_NOT_MAC = true;
 const SHOW_INITIAL_MENU = true;
 const SHOW_MODEL_SELECT_MENU = true;
 const EXTENSION_BUILD_PATH = path.parse(__filename).dir + "/../build";
@@ -35,7 +35,7 @@ const MAIN_MENU_CHOICES = {
     'Restart PodMan Machine with API Remoting support': () => restart_podman_machine_with_apir(),
     'Restart PodMan Machine with the default configuration': () => restart_podman_machine_without_apir(),
     'Launch an API Remoting accelerated Inference Server': () => launchApirInferenceServer(),
-    'Check  PodMan Machine API Remoting status': () => checkPodmanMachineStatus(),
+    'Check  PodMan Machine API Remoting status': () => checkPodmanMachineStatus(true),
 }
 
 function registerFromDir(startPath, filter, register) {
@@ -115,7 +115,15 @@ async function launchApirInferenceServer() {
     const containerId = await hasApirContainerRunning();
     if (containerId !== undefined) {
         console.error("API Remoting container ${containerId} already running ...");
-        await extensionApi.window.showErrorMessage(`An API Remoting container ${containerId}  is already running. This version cannot have two containers running simultaneously.`);
+        await extensionApi.window.showErrorMessage(`API Remoting container ${containerId} is already running. This version cannot have two API Remoting containers running simultaneously.`);
+        return;
+    }
+
+    const status = await checkPodmanMachineStatus(false);
+    if (status !== 0) {
+        const msg = `Podman Machine not running with API remoting, cannot launch the API Remoting container: status #${status}.`
+        console.warn(msg);
+        await extensionApi.window.showErrorMessage(msg);
         return;
     }
 
@@ -247,7 +255,7 @@ async function launchApirInferenceServer() {
     // Create the container
     const { engineId, id } = await createContainer(imageInfo.engineId, containerCreateOptions, labels);
 
-    //await extensionApi.window.showInformationMessage(`Container has been launched! ${engineId} | ${id}`);
+    await extensionApi.window.showInformationMessage(`API Remoting container ${id} has been launched!`);
 
 }
 export type BetterContainerCreateResult = ContainerCreateResult & { engineId: string };
@@ -261,7 +269,6 @@ async function createContainer(
     console.log("Creating container ...");
     try {
         const result = await containerEngine.createContainer(engineId, containerCreateOptions);
-        // update the task
         console.log("Container created!");
 
         // return the ContainerCreateResult
@@ -270,8 +277,9 @@ async function createContainer(
             engineId: engineId,
         };
     } catch (err: unknown) {
-        console.error(`Container creation failed :/ ${String(err)}`);
-
+        const msg = `Container creation failed :/ ${String(err)}`
+        console.error(msg);
+        await extensionApi.window.showErrorMessage(msg);
         throw err;
     }
 }
@@ -505,25 +513,32 @@ async function prepare_krunkit(): Promise<void> {
     console.log("Binaries successfully prepared!")
 }
 
-async function checkPodmanMachineStatus(): Promise<void> {
+async function checkPodmanMachineStatus(with_gui): Promise<void> {
     try {
         const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${EXTENSION_BUILD_PATH}/check_podman_machine_status.sh`], {cwd: LocalBuildDir});
         // exit with success, krunkit is running API remoting
         const status = stdout.replace(/\n$/, "")
         const msg = `Podman Machine API Remoting status:\n${status}`
-        await extensionApi.window.showInformationMessage(msg);
+        if (with_gui) {
+            await extensionApi.window.showInformationMessage(msg);
+        }
         console.log(msg);
+
+        return 0;
     } catch (error) {
-        console.error(error);
+        //console.error(error);
         let msg;
         const status = error.stdout.replace(/\n$/, "")
         const exitCode = error.exitCode;
 
         if (exitCode > 10 && exitCode < 20) {
             // exit with code 1x ==> successful completion, but not API Remoting support
-            msg =`Podman Machine status: ${status} (code #${exitCode})`;
-            await extensionApi.window.showInformationMessage(msg);
-            return;
+            msg =`Podman Machine status: ${status}: status #${exitCode}`;
+            if (with_gui) {
+                await extensionApi.window.showErrorMessage(msg);
+            }
+            console.warn(msg)
+            return exitCode;
         }
 
         // other exit code crash of unsuccessful completion
