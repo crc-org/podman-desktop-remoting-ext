@@ -453,11 +453,11 @@ async function restart_podman_machine_with_apir(): Promise<void> {
     try {
         const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${LocalBuildDir}/podman_start_machine.api_remoting.sh`], {cwd: LocalBuildDir});
 
-        const msg = "Podman machine successfully restart with the APIR libraries"
+        const msg = "Podman machine successfully restarted with the APIR libraries"
         await extensionApi.window.showInformationMessage(msg);
         console.log(msg);
     } catch (error) {
-        const msg = "Failed to restart podman machine with the API libraries: ${error}"
+        const msg = `Failed to restart podman machine with the API libraries: ${error}`
         await extensionApi.window.showErrorMessage(msg);
         console.error(msg);
         throw new Error(msg);
