@@ -114,7 +114,7 @@ async function hasApirContainerRunning() {
 async function launchApirInferenceServer() {
     const containerId = await hasApirContainerRunning();
     if (containerId !== undefined) {
-        console.error("API Remoting container ${containerId} already running ...");
+        console.error(`API Remoting container ${containerId} already running ...`);
         await extensionApi.window.showErrorMessage(`API Remoting container ${containerId} is already running. This version cannot have two API Remoting containers running simultaneously.`);
         return;
     }
