@@ -119,22 +119,33 @@ async function launchApirInferenceServer() {
         return;
     }
 
-    const status = await checkPodmanMachineStatus(false);
-    if (status !== 0) {
-        const msg = `Podman Machine not running with API remoting, cannot launch the API Remoting container: status #${status}.`
-        console.warn(msg);
-        await extensionApi.window.showErrorMessage(msg);
-        return;
-    }
-
     if (RamalamaRemotingImage === undefined) throw new Error("Ramalama Remoting image name not loaded. This is unexpected.");
 
-    if (Object.keys(AvailableModels).length === 0) {
-        await extensionApi.window.showErrorMessage("The list of models is empty. Please download models with Podman Desktop AI lab first.");
-        return;
-    }
     let model_name;
-    if (SHOW_MODEL_SELECT_MENU) {
+    if (Object.keys(AvailableModels).length === 0) {
+	await extensionApi.window.showInformationMessage(`Could not find any model downloaded from AI Lab. Please select a GGUF file to load.`);
+	let model_name_uri = await extensionApi.window.showOpenDialog({tile: "Select a model file", openLabel: "Select a GGUF file", selectors:["openFile"]})
+
+	if (model_name_uri === undefined) {
+	    console.log("No model selected, aborting the APIR container launch silently.")
+	    return;
+	}
+	model_name = model_name_uri[0].fsPath;
+	if (path.extname(model_name).toLowerCase() !== '.gguf') {
+	    const msg = `Selected file isn't a .gguf: ${model_name}`
+            console.warn(msg);
+            await extensionApi.window.showErrorMessage(msg);
+	    return;
+	}
+
+	if (!fs.existsSync(model_name)){
+            const msg = `Selected GGUF model file does not exist: ${model_name}`
+            console.warn(msg);
+            await extensionApi.window.showErrorMessage(msg);
+	    return;
+	}
+
+    } else if (SHOW_MODEL_SELECT_MENU) {
         refreshAvailableModels();
 
         // display a choice to the user for selecting some values
@@ -168,7 +179,11 @@ async function launchApirInferenceServer() {
 
 
     // get model mount settings
-    const model_src = AvailableModels[model_name];
+    if (Object.keys(AvailableModels).length === 0) {
+	model_src = model_name;
+    } else {
+	model_src = AvailableModels[model_name];
+    }
     if (model_src === undefined)
         throw new Error(`Couldn't get the file associated with model ${model_src}. This is unexpected.`);
 
