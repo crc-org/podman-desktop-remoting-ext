@@ -428,7 +428,7 @@ export async function activate(extensionContext: extensionApi.ExtensionContext):
 
         try {
             MAIN_MENU_CHOICES[result]();
-        } catch (error) {
+        } catch (err: unknown) {
             const msg = `Task failed: ${String(error)}`;
             console.error(msg);
             await extensionApi.window.showErrorMessage(msg);
