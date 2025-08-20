@@ -1,6 +1,10 @@
 import type {
     ContainerCreateOptions,
+    ContainerCreateResult,
     ContainerProviderConnection,
+    Device,
+    ListImagesOptions,
+    PullEvent,
     DeviceRequest,
     ImageInfo,
     MountConfig,
@@ -22,20 +26,27 @@ const AvailableModels = {};
 let ExtensionStoragePath = undefined;
 
 const FAIL_IF_NOT_MAC = true;
-const SHOW_INITIAL_MENU = true;
-const SHOW_MODEL_SELECT_MENU = true;
 const EXTENSION_BUILD_PATH = path.parse(__filename).dir + "/../build";
+const RESTRICT_OPEN_TO_GGUF_FILES = false;
+const SEARCH_AI_LAB_MODELS = true;
 
-const DEFAULT_MODEL_NAME = "ibm-granite/granite-3.3-8b-instruct-GGUF"; // if not showing the select menu
 let RamalamaRemotingImage = undefined;
 let ApirVersion = undefined;
 let LocalBuildDir = undefined;
+let StatusBar = undefined;
+let NoAiLabModelWarningShown = false;
 
-const MAIN_MENU_CHOICES = {
-    'Restart PodMan Machine with API Remoting support': () => restart_podman_machine_with_apir(),
-    'Restart PodMan Machine with the default configuration': () => restart_podman_machine_without_apir(),
-    'Launch an API Remoting accelerated Inference Server': () => launchApirInferenceServer(),
-    'Check  PodMan Machine API Remoting status': () => checkPodmanMachineStatus(true),
+function setStatus(status) {
+    console.log(`API Remoting status: ${status}`)
+    if (StatusBar === undefined) {
+	console.warn("Status bar not available ...");
+	return;
+    }
+    if (status === undefined) {
+	StatusBar.text = `Llama.cpp API Remoting`
+    } else {
+	StatusBar.text = `Llama.cpp API Remoting: ${status}`
+    }
 }
 
 function registerFromDir(startPath, filter, register) {
@@ -80,6 +91,11 @@ const getRandomString = (): string => {
 };
 
 function refreshAvailableModels() {
+    if (!SEARCH_AI_LAB_MODELS) {
+	console.log("Searching AI lab models is disabled. Skipping refreshAvailableModels.")
+	return;
+    }
+
     if (ExtensionStoragePath === undefined) throw new Error('ExtensionStoragePath not defined :/');
 
     // delete the existing models
@@ -104,37 +120,141 @@ function sleep(ms) {
 }
 
 async function hasApirContainerRunning() {
-    const containerInfo =
-          (await containerEngine.listContainers())
-          .find(containerInfo => (containerInfo.Labels["llama-cpp.apir"] === "true" && containerInfo.State === "running"));
+    const containerInfo = (await containerEngine.listContainers()).find(
+	containerInfo =>
+	containerInfo.Labels?.['llama-cpp.apir'] === 'true' &&
+	    containerInfo.State === 'running',
+    );
 
-    return containerInfo?.Id;
+    return containerInfo;
 }
 
-async function launchApirInferenceServer() {
-    const containerId = await hasApirContainerRunning();
-    if (containerId !== undefined) {
-        console.error("API Remoting container ${containerId} already running ...");
-        await extensionApi.window.showErrorMessage(`API Remoting container ${containerId} is already running. This version cannot have two API Remoting containers running simultaneously.`);
+async function stopApirInferenceServer() {
+    const containerInfo = await hasApirContainerRunning();
+    if (containerInfo === undefined) {
+	const msg = `🔴 Could not find an API Remoting container running ...`
+	setStatus(msg);
+        await extensionApi.window.showErrorMessage(msg);
+        return;
+    }
+    setStatus("⚙️ Stopping the inference server ...")
+    await containerEngine.stopContainer(containerInfo.engineId, containerInfo.Id);
+    await checkPodmanMachineStatus(false);
+}
+
+async function showRamalamaChat() {
+    const containerInfo = await hasApirContainerRunning();
+    if (containerInfo === undefined) {
+	const msg = `🔴 Could not find an API Remoting container running ...`
+	setStatus(msg);
+        await extensionApi.window.showErrorMessage(msg);
+        return;
+    }
+    const api_url = containerInfo?.Labels?.api;
+
+    if (!api_url) {
+	const msg = '🔴 Missing API URL label on the running APIR container.';
+	setStatus(msg);
+	await extensionApi.window.showErrorMessage(msg);
+	return;
+    }
+
+    await extensionApi.window.showInputBox({
+	title: "ramalama chat",
+	prompt: "RamaLama command to chat with the API Remoting model",
+	multiline: true,
+	value: `ramalama chat --url "${api_url}"`,
+    });
+}
+
+async function showRamalamaRun() {
+    if (!RamalamaRemotingImage) {
+	await extensionApi.window.showErrorMessage('APIR image is not loaded yet.');
+        return;
+    }
+    await extensionApi.window.showInputBox({
+	title: "ramalama run",
+	prompt: "RamaLama command to launch a model",
+	multiline: true,
+	value: `ramalama --image "${RamalamaRemotingImage}" run llama3.2`,
+    });
+}
+
+async function showRamalamaBenchmark() {
+    if (!RamalamaRemotingImage) {
+	await extensionApi.window.showErrorMessage('APIR image is not loaded yet.');
         return;
     }
 
-    const status = await checkPodmanMachineStatus(false);
-    if (status !== 0) {
-        const msg = `Podman Machine not running with API remoting, cannot launch the API Remoting container: status #${status}.`
-        console.warn(msg);
-        await extensionApi.window.showErrorMessage(msg);
+    await extensionApi.window.showInputBox({
+	title: "ramalama bench",
+	prompt: "RamaLama commands to run benchmarks",
+	multiline: true,
+	value: `
+# Venus-Vulkan benchmarking
+ramalama bench llama3.2
+
+# Native Metal benchmarking (needs \`llama-bench\` installed)
+ramalama --nocontainer bench llama3.2
+
+# API Remoting benchmark
+ramalama bench  --image "${RamalamaRemotingImage}" llama3.2
+`
+
+    });
+}
+
+async function launchApirInferenceServer() {
+    const containerInfo = await hasApirContainerRunning();
+    if (containerInfo !== undefined) {
+	const id = containerInfo.Id;
+        console.error(`API Remoting container ${id} already running ...`);
+        await extensionApi.window.showErrorMessage(`🟠 API Remoting container ${id} is already running. This version cannot have two API Remoting containers running simultaneously.`);
         return;
     }
 
     if (RamalamaRemotingImage === undefined) throw new Error("Ramalama Remoting image name not loaded. This is unexpected.");
 
-    if (Object.keys(AvailableModels).length === 0) {
-        await extensionApi.window.showErrorMessage("The list of models is empty. Please download models with Podman Desktop AI lab first.");
-        return;
-    }
+    setStatus("⚙️ Configuring the inference server ...")
     let model_name;
-    if (SHOW_MODEL_SELECT_MENU) {
+    if (Object.keys(AvailableModels).length === 0) {
+	if (!NoAiLabModelWarningShown) {
+	    await extensionApi.window.showInformationMessage(`🟠 Could not find any model downloaded from AI Lab. Please select a GGUF file to load.`);
+	    NoAiLabModelWarningShown = true;
+	}
+	let uris = await extensionApi.window.showOpenDialog({
+	    title: "Select a GGUF model file",
+	    openLabel: "Select",
+	    canSelectFiles: true,
+	    canSelectFolders: false,
+	    canSelectMany: false,
+	    filters: { 'GGUF Models': ['gguf'] },
+	})
+
+	if (!uris || uris.length === 0) {
+	    console.log("No model selected, aborting the APIR container launch silently.")
+	    return;
+	}
+	model_name = uris[0].fsPath;
+
+	if (RESTRICT_OPEN_TO_GGUF_FILES) {
+	    if (path.extname(model_name).toLowerCase() !== '.gguf') {
+		const msg = `Selected file isn't a .gguf: ${model_name}`
+		console.warn(msg);
+		await extensionApi.window.showErrorMessage(msg);
+		return;
+	    }
+	}
+
+	if (!fs.existsSync(model_name)){
+            const msg = `Selected GGUF model file does not exist: ${model_name}`
+            console.warn(msg);
+            await extensionApi.window.showErrorMessage(msg);
+	    return;
+	}
+
+
+    } else {
         refreshAvailableModels();
 
         // display a choice to the user for selecting some values
@@ -146,29 +266,34 @@ async function launchApirInferenceServer() {
             console.warn('No model chosen, nothing to launch.')
             return;
         }
-
-    } else {
-        model_name = DEFAULT_MODEL_NAME;
     }
 
     // prepare the port
-    let host_port = await extensionApi.window.showInputBox({title: "Service port", prompt: "Inference service port on the host", value: "1234", validateInput: (value)=> parseInt(value, 10) > 1024 ? "": "Enter a valid port > 1024"});
-    host_port = parseInt(host_port);
 
-    if (host_port === undefined || Number.isNaN(host_port)) {
+    const host_port_str = await extensionApi.window.showInputBox({
+	title: "Service port",
+	prompt: "Inference service port on the host",
+	value: "1234",
+	validateInput: (value) => (parseInt(value, 10) > 1024 ? "" : "Enter a valid port > 1024"),
+    });
+    const host_port = host_port_str ? parseInt(host_port_str, 10) : Number.NaN;
+
+    if (Number.isNaN(host_port)) {
         console.warn('No host port chosen, nothing to launch.')
         return;
     }
 
+    setStatus("⚙️ Pulling the image ...")
     // pull the image
     const imageInfo: ImageInfo = await pullImage(
         RamalamaRemotingImage,
         {},
     );
 
-
+    setStatus("⚙️ Creating the container ...")
     // get model mount settings
-    const model_src = AvailableModels[model_name];
+    const model_src: string = AvailableModels[model_name] ?? model_name;
+
     if (model_src === undefined)
         throw new Error(`Couldn't get the file associated with model ${model_src}. This is unexpected.`);
 
@@ -180,8 +305,8 @@ async function launchApirInferenceServer() {
     // prepare the labels
     const labels: Record<string, string> = {
         ['ai-lab-inference-server']: JSON.stringify([model_dirname]),
-        ['api']: `http://localhost:${host_port}/v1`,
-        ['docs']: `http://localhost:${ai_lab_port}/api-docs/${host_port}`,
+        ['api']: `http://127.0.0.1:${host_port}/v1`,
+        ['docs']: `http://127.0.0.1:${ai_lab_port}/api-docs/${host_port}`,
         ['gpu']: `llama.cpp API Remoting`,
         ["trackingId"]: getRandomString(),
         ["llama-cpp.apir"]: "true",
@@ -194,6 +319,7 @@ async function launchApirInferenceServer() {
           Target: model_dest,
           Source: model_src,
           Type: 'bind',
+	  ReadOnly: true,
       },
     ];
 
@@ -226,7 +352,7 @@ async function launchApirInferenceServer() {
         Detach: true,
         Entrypoint: entrypoint,
         Cmd: cmd,
-        ExposedPorts: { [`${host_port}`]: {} },
+        ExposedPorts: { [`${host_port}/tcp`]: {} },
         HostConfig: {
             AutoRemove: false,
             Devices: devices,
@@ -254,8 +380,8 @@ async function launchApirInferenceServer() {
     console.log(containerCreateOptions, mounts)
     // Create the container
     const { engineId, id } = await createContainer(imageInfo.engineId, containerCreateOptions, labels);
-
-    await extensionApi.window.showInformationMessage(`API Remoting container ${id} has been launched!`);
+    setStatus(`🎉 Inference server is ready on port ${host_port}`)
+    await extensionApi.window.showInformationMessage(`🎉 ${model_name} is running with API Remoting acceleration!`);
 
 }
 export type BetterContainerCreateResult = ContainerCreateResult & { engineId: string };
@@ -279,6 +405,7 @@ async function createContainer(
     } catch (err: unknown) {
         const msg = `Container creation failed :/ ${String(err)}`
         console.error(msg);
+	setStatus("🔴 Container creation failed")
         await extensionApi.window.showErrorMessage(msg);
         throw err;
     }
@@ -292,11 +419,9 @@ async function pullImage(
     console.log(`Pulling the image ${image} ...`)
 
     const providers: ProviderContainerConnection[] = provider.getContainerConnections();
-    const podmanProvider = providers
-          .filter(({ connection }) => connection.type === 'podman');
-    if (!podmanProvider) throw new Error(`cannot find podman provider`);
-
-    let connection: ContainerProviderConnection = podmanProvider[0].connection;
+    const podmanProvider = providers.find(({ connection }) => connection.type === 'podman');
+    if (!podmanProvider) throw new Error('cannot find podman provider');
+    let connection: ContainerProviderConnection = podmanProvider.connection;
 
     // get the default image info for this provider
     return getImageInfo(connection, image, (_event: PullEvent) => {})
@@ -360,8 +485,8 @@ async function initializeStorageDir(storagePath, buildPath) {
 
     LocalBuildDir = `${storagePath}/${ApirVersion}`;
     if (!fs.existsSync(LocalBuildDir)){
-        copyRecursive(buildPath, LocalBuildDir)
-            .then(() => console.log('Copy complete'));
+        await copyRecursive(buildPath, LocalBuildDir)
+        console.log('Copy complete');
     }
 }
 
@@ -369,42 +494,74 @@ export async function activate(extensionContext: extensionApi.ExtensionContext):
     // initialize the global variables ...
     ExtensionStoragePath = extensionContext.storagePath;
     console.log("Activating the API Remoting extension ...")
-    try {
-        await initializeBuildDir(EXTENSION_BUILD_PATH);
-        console.log(`Installing APIR version ${ApirVersion} ...`);
-        console.log(`Using image ${RamalamaRemotingImage}`);
 
-        await initializeStorageDir(extensionContext.storagePath, EXTENSION_BUILD_PATH);
-
-        console.log(`Preparing the krunkit binaries ...`);
-        await prepare_krunkit();
-
-        console.log(`Loading the models ...`);
-        refreshAvailableModels();
-    } catch (error) {
-        const msg = `Couldn't initialize the extension: ${error}`
-
-        await extensionApi.window.showErrorMessage(msg);
-        // throw new Error(msg);
-    }
-
-    // register the command referenced in package.json file
+   // register the command referenced in package.json file
     const menuCommand = extensionApi.commands.registerCommand('llama.cpp.apir.menu', async () => {
         if (FAIL_IF_NOT_MAC && !extensionApi.env.isMac) {
             await extensionApi.window.showErrorMessage(`llama.cpp API Remoting only supported on MacOS.`);
             return;
         }
 
-        let result;
-        if (SHOW_INITIAL_MENU) {
-            // display a choice to the user for selecting some values
-            result = await extensionApi.window.showQuickPick(Object.keys(MAIN_MENU_CHOICES), {
-                title: "What do you want to do?",
-                canPickMany: false, // user can select more than one choice
-            });
-        } else {
-            result = MAIN_MENU_CHOICES[2];
-        }
+	let status = "(status is undefined)";
+	try {
+	    status = await checkPodmanMachineStatus(false)
+	} catch (err: unknown) {
+	    await extensionApi.window.showErrorMessage(err);
+	    return;
+	}
+
+	const main_menu_choices: Record<string, () => Promise<void> | void> = {};
+	// status values:
+
+	//  0 ==> running with API Remoting support
+	// 10 ==> running vfkit VM instead of krunkit
+	// 11 ==> krunkit not running
+	// 12 ==> krunkit running without API Remoting
+	// 2x ==> script cannot run correctly
+
+	//  1 ==> running with a container launched
+	//127 ==> APIR files not available
+
+	let status_str;
+	if (status === 127) { // files have been uninstalled
+	    status_str = "API Remoting binaries are not installed"
+	    main_menu_choices["Reinstall the API Remoting binaries"] = installApirBinaries;
+
+	} else if (status === 0 || status === 1) { // running with API Remoting support
+	    if (status === 0) {
+		status_str = "VM is running with API Remoting 🎉"
+		main_menu_choices["Launch an API Remoting accelerated Inference Server"] = launchApirInferenceServer;
+		main_menu_choices["Show RamaLama model launch command"] = showRamalamaRun;
+		main_menu_choices["Show RamaLama benchmark commands"] = showRamalamaBenchmark;
+	    } else {
+		status_str = "an API Remoting inference server is already running"
+		main_menu_choices["Show RamaLama chat command"] = showRamalamaChat;
+		main_menu_choices["Stop the API Remoting Inference Server"] = stopApirInferenceServer;
+	    }
+	    main_menu_choices["---"] = function() {};
+	    main_menu_choices["Restart PodMan Machine without API Remoting"] = restart_podman_machine_without_apir;
+
+	} else if (status === 10 || status === 11 || status === 12) {
+	    if (status === 10) {
+		status_str = "VM is running with vfkit";
+	    } else if (status === 11) {
+		status_str = "VM is not running";
+	    } else if (status === 12) {
+		status_str = "VM is running without API Remoting";
+	    }
+	    main_menu_choices["Restart PodMan Machine with API Remoting support"] = restart_podman_machine_with_apir;
+	    main_menu_choices["Uninstall the API Remoting binaries"] = uninstallApirBinaries;
+	}
+
+	main_menu_choices["---"] = function() {};
+	main_menu_choices["Check PodMan Machine API Remoting status"] = () => checkPodmanMachineStatus(true);
+
+        // display a choice to the user for selecting some values
+        const result = await extensionApi.window.showQuickPick(Object.keys(main_menu_choices), {
+            title: `What do
+you want to do? (${status_str})`,
+            canPickMany: false, // user can select more than one choice
+        });
 
         if (result === undefined) {
             console.log("No user choice, aborting.");
@@ -412,9 +569,9 @@ export async function activate(extensionContext: extensionApi.ExtensionContext):
         }
 
         try {
-            MAIN_MENU_CHOICES[result]();
-        } catch (error) {
-            const msg = `Task failed: ${String(error)}`;
+            await main_menu_choices[result]();
+        } catch (err: unknown) {
+            const msg = `Task failed: ${String(err)}`;
             console.error(msg);
             await extensionApi.window.showErrorMessage(msg);
 
@@ -425,63 +582,123 @@ export async function activate(extensionContext: extensionApi.ExtensionContext):
     try {
         // create an item in the status bar to run our command
         // it will stick on the left of the status bar
-        const item = extensionApi.window.createStatusBarItem(extensionApi.StatusBarAlignLeft, 100);
-        item.text = 'Llama.cpp API Remoting';
-        item.command = 'llama.cpp.apir.menu';
-        item.show();
+	StatusBar = extensionApi.window.createStatusBarItem(extensionApi.StatusBarAlignLeft, 100);
+
+	setStatus("⚙️ Initializing ...");
+        StatusBar.command = 'llama.cpp.apir.menu';
+        StatusBar.show();
 
         // register disposable resources to it's removed when you deactivte the extension
         extensionContext.subscriptions.push(menuCommand);
-        extensionContext.subscriptions.push(item);
+        extensionContext.subscriptions.push(StatusBar);
     } catch (error) {
         const msg = `Couldn't subscribe the extension to Podman Desktop: ${error}`
 
         await extensionApi.window.showErrorMessage(msg);
         throw new Error(msg);
     }
+
+    try {
+	setStatus("Installing ...")
+	await installApirBinaries();
+    } catch (error) {
+	return; // message already printed on screen
+    }
+
+    setStatus(`⚙️ Loading the models ...`);
+    try {
+	refreshAvailableModels();
+    } catch (error) {
+        const msg = `Couldn't initialize the extension: ${error}`
+
+        await extensionApi.window.showErrorMessage(msg);
+	setStatus(`🔴 ${msg}`);
+	return
+    }
+
+    setStatus();
 }
 
 export async function deactivate(): Promise<void> {
 
 }
 
+async function installApirBinaries() {
+    try {
+        await initializeBuildDir(EXTENSION_BUILD_PATH);
+        console.log(`Installing APIR version ${ApirVersion} ...`);
+	StatusBar.tooltip = `version ${ApirVersion}`;
+        console.log(`Using image ${RamalamaRemotingImage}`);
+
+	setStatus(`⚙️ Extracting the binaries ...`);
+        await initializeStorageDir(ExtensionStoragePath, EXTENSION_BUILD_PATH);
+
+        setStatus(`⚙️ Preparing krunkit ...`);
+        await prepare_krunkit();
+	setStatus(`✅ binaries installed`);
+    } catch (error) {
+        const msg = `Couldn't initialize the extension: ${error}`
+	setStatus(`🔴 ${msg}`);
+        await extensionApi.window.showErrorMessage(msg);
+	throw error;
+    }
+}
+
+async function uninstallApirBinaries() {
+    if (ExtensionStoragePath === undefined) throw new Error('ExtensionStoragePath not defined :/');
+    setStatus(`⚙️ Uninstalling the binaries ...`);
+    const toDelete = [];
+
+    registerFromDir(ExtensionStoragePath, 'check_podman_machine_status.sh', function(filename) {toDelete.push(path.dirname(filename))});
+
+    for (const dirName of toDelete) {
+	console.warn("⚠️ deleting APIR directory: ", dirName);
+
+	fs.rmSync(dirName, { recursive: true, force: true });
+    }
+    console.warn("⚠️ deleting done");
+
+    setStatus(`✅ binaries uninstalled 👋`);
+}
+
 async function restart_podman_machine_with_apir(): Promise<void> {
     if (LocalBuildDir === undefined) throw new Error("LocalBuildDir not loaded. This is unexpected.");
 
-    await extensionApi.window.showInformationMessage(`Restarting Podman machine with APIR support ...`);
-
     try {
+	setStatus("⚙️ Restarting PodMan Machine with API Remoting support ...")
         const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${LocalBuildDir}/podman_start_machine.api_remoting.sh`], {cwd: LocalBuildDir});
 
-        const msg = "Podman machine successfully restarted with the APIR libraries"
+        const msg = "🟢 PodMan Machine successfully restarted with API Remoting support"
         await extensionApi.window.showInformationMessage(msg);
         console.log(msg);
+	setStatus("🟢 API Remoting support enabled");
     } catch (error) {
-        const msg = `Failed to restart podman machine with the API libraries: ${error}`
+        const msg = `Failed to restart PodMan Machine with the API Remoting support: ${error}`
         await extensionApi.window.showErrorMessage(msg);
         console.error(msg);
+	setStatus(`🔴 ${msg}`);
         throw new Error(msg);
     }
 }
 
 async function restart_podman_machine_without_apir(): Promise<void> {
-    await extensionApi.window.showInformationMessage(`Restarting Podman machine without API Remoting support`);
-
     try {
-        console.log(`Stopping the PodMan Machine ...`);
+	setStatus("⚙️ Stopping the PodMan Machine ...")
         const { stdout } = await extensionApi.process.exec("podman", ['machine', 'stop']);
     } catch (error) {
         const msg = `Failed to stop the PodMan Machine: ${error}`;
+	setStatus(`🔴 ${msg}`);
         await extensionApi.window.showErrorMessage(msg);
         console.error(msg);
         throw new Error(msg);
     }
 
     try {
-        console.log(`Starting the PodMan Machine ...`);
+	setStatus("⚙️ Restarting the default PodMan Machine ...")
         const { stdout } = await extensionApi.process.exec("podman", ['machine', 'start']);
     } catch (error) {
         const msg = `Failed to restart the PodMan Machine: ${error}`;
+	setStatus(`🔴 ${msg}`);
         await extensionApi.window.showErrorMessage(msg);
         console.error(msg);
         throw new Error(msg);
@@ -489,7 +706,8 @@ async function restart_podman_machine_without_apir(): Promise<void> {
 
     const msg = "PodMan Machine successfully restarted without API Remoting support";
     await extensionApi.window.showInformationMessage(msg);
-    console.error(msg);
+    console.log(msg);
+    setStatus("🟠 Running without API Remoting support")
 }
 
 async function prepare_krunkit(): Promise<void> {
@@ -500,7 +718,12 @@ async function prepare_krunkit(): Promise<void> {
         return;
     }
 
-    await extensionApi.window.showInformationMessage(`Preparing the krunkit binaries for API Remoting ...`);
+    setStatus(`⚙️ Preparing the krunkit binaries for API Remoting ...`);
+    if (!fs.existsSync(`${LocalBuildDir}/update_krunkit.sh`)) {
+	const msg = `Cannot prepare the krunkit binaries: ${LocalBuildDir}/update_krunkit.sh does not exist`
+	console.error(msg);
+	throw new Error(msg);
+    }
 
     try {
         const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${LocalBuildDir}/update_krunkit.sh`], {cwd: LocalBuildDir});
@@ -508,14 +731,21 @@ async function prepare_krunkit(): Promise<void> {
         console.error(error);
         throw new Error(`Couldn't update the krunkit binaries: ${error}: ${error.stdout}`);
     }
-    await extensionApi.window.showInformationMessage(`Binaries successfully prepared!`);
-
-    console.log("Binaries successfully prepared!")
+    setStatus(`✅ binaries prepared!`);
 }
 
-async function checkPodmanMachineStatus(with_gui): Promise<void> {
+async function checkPodmanMachineStatus(with_gui: boolean): Promise<number> {
+    if (!fs.existsSync(`${LocalBuildDir}/check_podman_machine_status.sh`)) {
+	console.log(`checkPodmanMachineStatus: script not found in ${LocalBuildDir}`)
+	setStatus("⛔ not installed");
+	if (with_gui) {
+	    await extensionApi.window.showInformationMessage("⛔ API Remoting binaries are not installed");
+        }
+	return 127;
+    }
+
     try {
-        const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${EXTENSION_BUILD_PATH}/check_podman_machine_status.sh`], {cwd: LocalBuildDir});
+        const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${LocalBuildDir}/check_podman_machine_status.sh`], {cwd: LocalBuildDir});
         // exit with success, krunkit is running API remoting
         const status = stdout.replace(/\n$/, "")
         const msg = `Podman Machine API Remoting status:\n${status}`
@@ -523,21 +753,36 @@ async function checkPodmanMachineStatus(with_gui): Promise<void> {
             await extensionApi.window.showInformationMessage(msg);
         }
         console.log(msg);
+	const containerInfo = await hasApirContainerRunning();
+	if (containerInfo !== undefined) {
+	    setStatus(`🟢 Inference Server running`);
+	    return 1;
+	} else {
+	    setStatus("🟢");
+	    return 0;
+	}
 
-        return 0;
     } catch (error) {
-        //console.error(error);
         let msg;
         const status = error.stdout.replace(/\n$/, "")
         const exitCode = error.exitCode;
 
         if (exitCode > 10 && exitCode < 20) {
             // exit with code 1x ==> successful completion, but not API Remoting support
-            msg =`Podman Machine status: ${status}: status #${exitCode}`;
+            msg =`🟠 Podman Machine status: ${status}`;
             if (with_gui) {
-                await extensionApi.window.showErrorMessage(msg);
+                await extensionApi.window.showInformationMessage(msg);
             }
             console.warn(msg)
+	    if (exitCode === 10 || exitCode === 12) {
+		setStatus("🟠 PodMan Machine running without API Remoting support");
+	    } else if (exitCode === 11) {
+		setStatus("🟠 PodMan Machine not running");
+	    } else {
+		setStatus(`🔴 Invalid check status ${exitCode}`)
+		console.warn(`Invalid check status ${exitCode}: ${error.stdout}`)
+	    }
+
             return exitCode;
         }
 
@@ -545,6 +790,7 @@ async function checkPodmanMachineStatus(with_gui): Promise<void> {
         msg =`Failed to check PodMan Machine status: ${status} (code #${exitCode})`;
         await extensionApi.window.showErrorMessage(msg);
         console.error(msg);
+	setStatus(`🔴 ${msg}`)
         throw new Error(msg);
     }
 }
