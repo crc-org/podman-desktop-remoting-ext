@@ -199,8 +199,7 @@ ramalama --nocontainer bench llama3.2
 
 # API Remoting benchmark
 ramalama bench  --image "${RamalamaRemotingImage}" llama3.2
-`
-
+# (scroll up to see more)`
     });
 }
 
@@ -411,17 +410,22 @@ async function createContainer(
     }
 }
 
+function getConnection(): ContainerProviderConnection {
+    const providers: ProviderContainerConnection[] = provider.getContainerConnections();
+    const podmanProvider = providers.find(({ connection }) => connection.type === 'podman');
+    if (!podmanProvider) throw new Error('cannot find podman provider');
+    let connection: ContainerProviderConnection = podmanProvider.connection;
+
+    return connection;
+}
+
 async function pullImage(
     image: string,
     labels: { [id: string]: string },
 ): Promise<ImageInfo> {
     // Creating a task to follow pulling progress
     console.log(`Pulling the image ${image} ...`)
-
-    const providers: ProviderContainerConnection[] = provider.getContainerConnections();
-    const podmanProvider = providers.find(({ connection }) => connection.type === 'podman');
-    if (!podmanProvider) throw new Error('cannot find podman provider');
-    let connection: ContainerProviderConnection = podmanProvider.connection;
+    const connection = getConnection();
 
     // get the default image info for this provider
     return getImageInfo(connection, image, (_event: PullEvent) => {})
@@ -661,12 +665,34 @@ async function uninstallApirBinaries() {
     setStatus(`✅ binaries uninstalled 👋`);
 }
 
+async function getConnectionName(): Promise<string> {
+    try {
+        const connection = getConnection();
+        const connectionName = connection?.["name"];
+        console.log("Connecting to", connectionName);
+
+        if (connectionName === undefined) {
+            throw new Error('cannot find podman connection name');
+        }
+
+        return connectionName;
+    } catch (error) {
+        const msg = `Failed to get the default connection to Podman: ${error}`
+        await extensionApi.window.showErrorMessage(msg);
+        console.error(msg);
+	setStatus(`🔴 ${msg}`);
+        throw new Error(msg);
+    }
+}
+
 async function restart_podman_machine_with_apir(): Promise<void> {
     if (LocalBuildDir === undefined) throw new Error("LocalBuildDir not loaded. This is unexpected.");
 
+    const connectionName = await getConnectionName();
+
     try {
 	setStatus("⚙️ Restarting PodMan Machine with API Remoting support ...")
-        const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${LocalBuildDir}/podman_start_machine.api_remoting.sh`], {cwd: LocalBuildDir});
+        const { stdout } = await extensionApi.process.exec("/usr/bin/env", ["bash", `${LocalBuildDir}/podman_start_machine.api_remoting.sh`, connectionName], {cwd: LocalBuildDir});
 
         const msg = "🟢 PodMan Machine successfully restarted with API Remoting support"
         await extensionApi.window.showInformationMessage(msg);
@@ -682,9 +708,11 @@ async function restart_podman_machine_with_apir(): Promise<void> {
 }
 
 async function restart_podman_machine_without_apir(): Promise<void> {
+    const connectionName = await getConnectionName();
+
     try {
 	setStatus("⚙️ Stopping the PodMan Machine ...")
-        const { stdout } = await extensionApi.process.exec("podman", ['machine', 'stop']);
+        const { stdout } = await extensionApi.process.exec("podman", ['machine', 'stop', connectionName]);
     } catch (error) {
         const msg = `Failed to stop the PodMan Machine: ${error}`;
 	setStatus(`🔴 ${msg}`);
@@ -695,7 +723,7 @@ async function restart_podman_machine_without_apir(): Promise<void> {
 
     try {
 	setStatus("⚙️ Restarting the default PodMan Machine ...")
-        const { stdout } = await extensionApi.process.exec("podman", ['machine', 'start']);
+        const { stdout } = await extensionApi.process.exec("podman", ['machine', 'start', connectionName]);
     } catch (error) {
         const msg = `Failed to restart the PodMan Machine: ${error}`;
 	setStatus(`🔴 ${msg}`);
