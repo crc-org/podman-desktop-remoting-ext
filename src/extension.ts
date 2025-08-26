@@ -176,7 +176,7 @@ async function showRamalamaRun() {
 	title: "ramalama run",
 	prompt: "RamaLama command to launch a model",
 	multiline: true,
-	value: `ramalama --image "${RamalamaRemotingImage}" run llama3.2`,
+	value: `ramalama run --image "${RamalamaRemotingImage}" llama3.2`,
     });
 }
 
