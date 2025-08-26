@@ -199,8 +199,7 @@ ramalama --nocontainer bench llama3.2
 
 # API Remoting benchmark
 ramalama bench  --image "${RamalamaRemotingImage}" llama3.2
-`
-
+# (scroll up to see more)`
     });
 }
 
