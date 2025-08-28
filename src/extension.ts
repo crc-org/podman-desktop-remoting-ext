@@ -410,10 +410,16 @@ async function createContainer(
     }
 }
 
-function getConnection(): ContainerProviderConnection {
+function getConnection(allowUndefined = false): ContainerProviderConnection | undefined {
     const providers: ProviderContainerConnection[] = provider.getContainerConnections();
-    const podmanProvider = providers.find(({ connection }) => connection.type === 'podman');
-    if (!podmanProvider) throw new Error('cannot find podman provider');
+    const podmanProvider = providers.find(({ connection }) => connection.type === 'podman' && connection.status() === "started");
+    if (!podmanProvider) {
+	if (allowUndefined) {
+	    return undefined;
+	} else {
+	    throw new Error('cannot find podman provider');
+	}
+    }
     let connection: ContainerProviderConnection = podmanProvider.connection;
 
     return connection;
@@ -665,16 +671,17 @@ async function uninstallApirBinaries() {
     setStatus(`✅ binaries uninstalled 👋`);
 }
 
-async function getConnectionName(): Promise<string> {
+async function getConnectionName(allowUndefined = false): Promise<string | undefined> {
     try {
-        const connection = getConnection();
+        const connection = getConnection(allowUndefined);
         const connectionName = connection?.["name"];
-        console.log("Connecting to", connectionName);
 
-        if (connectionName === undefined) {
+        if (!allowUndefined && connectionName === undefined) {
             throw new Error('cannot find podman connection name');
         }
-
+	if (connectionName) {
+            console.log("Connecting to", connectionName);
+	}
         return connectionName;
     } catch (error) {
         const msg = `Failed to get the default connection to Podman: ${error}`
